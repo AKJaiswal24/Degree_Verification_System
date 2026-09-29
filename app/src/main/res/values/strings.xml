@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="app_name">IBU Certificate Verifier</string>
+
+    <string name="home_title">Certificate Verification</string>
+    <string name="home_description">Point the camera at the QR code printed on a certificate to confirm it is genuine.</string>
+    <string name="home_scan_button">Scan QR Code</string>
+    <string name="home_logo_description">QR code symbol</string>
+
+    <string name="scanner_title">Scan Certificate QR</string>
+    <string name="scanner_hint">Hold steady over the QR code</string>
+    <string name="scanner_torch_on">Turn flashlight on</string>
+    <string name="scanner_torch_off">Turn flashlight off</string>
+    <string name="scanner_permission_denied">Camera access is needed to scan a QR code. Enable it in Settings.</string>
+    <string name="scanner_checking">Checking certificate</string>
+
+    <string name="gate_no_qr">No QR code detected</string>
+    <string name="gate_secure_unsupported">Secure certificate not supported</string>
+    <string name="gate_plain_id">Plain Certificate ID not accepted</string>
+    <string name="gate_not_certificate">Not a certificate QR code</string>
+    <string name="gate_damaged">The QR code is damaged or has been altered.</string>
+    <string name="gate_store_unreadable">This device could not read its own certificate store.</string>
+
+    <string name="verification_title">Certificate Verified</string>
+    <string name="verification_badge">VALID</string>
+    <string name="verification_student_name">Student Name</string>
+    <string name="verification_roll_number">Roll Number</string>
+    <string name="verification_enrollment_number">Enrollment Number</string>
+    <string name="verification_course_name">Course</string>
+    <string name="verification_university_name">University</string>
+    <string name="verification_passing_year">Year of Passing</string>
+    <string name="verification_percentage">Percentage / CGPA</string>
+    <string name="verification_certificate_type">Certificate Type</string>
+    <string name="verification_verified_on">Verified on %1$s</string>
+    <string name="verification_scan_another">Scan Another Certificate</string>
+    <string name="verification_go_home">Go to Home Screen</string>
+    <string name="verification_tick_description">Verified</string>
+
+    <string name="not_found_title">Certificate Not Found</string>
+    <string name="not_found_badge">INVALID</string>
+    <string name="not_found_scanned_id_label">Scanned certificate ID</string>
+    <string name="not_found_try_again">Try Again</string>
+    <string name="not_found_error_description">Not found</string>
+
+</resources>

@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/screen_background"
+    tools:context=".VerificationActivity">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/appBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            style="@style/AppToolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:title="@string/verification_title" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <ImageView
+        android:id="@+id/imageVerified"
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:layout_marginTop="24dp"
+        android:contentDescription="@string/verification_tick_description"
+        android:src="@drawable/ic_verified"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/appBar" />
+
+    <TextView
+        android:id="@+id/badgeValid"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_status_valid"
+        android:paddingStart="28dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="28dp"
+        android:paddingBottom="8dp"
+        android:text="@string/verification_badge"
+        android:textAppearance="@style/TextAppearance.MaterialComponents.Button"
+        android:textColor="@color/white"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/imageVerified" />
+
+    <androidx.cardview.widget.CardView
+        android:id="@+id/cardDetails"
+        style="@style/DetailCard"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="18dp"
+        android:layout_marginEnd="16dp"
+        app:layout_constraintBottom_toTopOf="@id/textVerifiedOn"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/badgeValid">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_student_name" />
+
+                <TextView
+                    android:id="@+id/valueStudentName"
+                    style="@style/DetailValue"
+                    tools:text="Aarav Sharma" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_roll_number" />
+
+                <TextView
+                    android:id="@+id/valueRollNumber"
+                    style="@style/DetailValue"
+                    tools:text="IBU2026CS001" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_enrollment_number" />
+
+                <TextView
+                    android:id="@+id/valueEnrollmentNumber"
+                    style="@style/DetailValue"
+                    tools:text="ENR20260001" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_course_name" />
+
+                <TextView
+                    android:id="@+id/valueCourseName"
+                    style="@style/DetailValue"
+                    tools:text="B.Tech Computer Science" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_university_name" />
+
+                <TextView
+                    android:id="@+id/valueUniversityName"
+                    style="@style/DetailValue"
+                    tools:text="iB University" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_passing_year" />
+
+                <TextView
+                    android:id="@+id/valuePassingYear"
+                    style="@style/DetailValue"
+                    tools:text="2026" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_percentage" />
+
+                <TextView
+                    android:id="@+id/valuePercentage"
+                    style="@style/DetailValue"
+                    tools:text="88.40" />
+
+                <TextView
+                    style="@style/DetailLabel"
+                    android:text="@string/verification_certificate_type" />
+
+                <TextView
+                    android:id="@+id/valueCertificateType"
+                    style="@style/DetailValue"
+                    tools:text="Degree" />
+
+            </LinearLayout>
+        </ScrollView>
+    </androidx.cardview.widget.CardView>
+
+    <TextView
+        android:id="@+id/textVerifiedOn"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:gravity="center"
+        android:textAppearance="@style/TextAppearance.MaterialComponents.Caption"
+        android:textColor="@color/text_secondary"
+        app:layout_constraintBottom_toTopOf="@id/buttonScanAnother"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/cardDetails"
+        tools:text="Verified on 29 Sep 2026, 14:05" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/buttonScanAnother"
+        android:layout_width="0dp"
+        android:layout_height="54dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:text="@string/verification_scan_another"
+        android:textAllCaps="false"
+        app:backgroundTint="@color/primary_blue"
+        app:layout_constraintBottom_toTopOf="@id/buttonGoHome"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/textVerifiedOn" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/buttonGoHome"
+        android:layout_width="0dp"
+        android:layout_height="54dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="20dp"
+        android:text="@string/verification_go_home"
+        android:textAllCaps="false"
+        android:textColor="@color/primary_blue"
+        app:backgroundTint="@color/white"
+        app:strokeColor="@color/primary_blue"
+        app:strokeWidth="1dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/buttonScanAnother" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

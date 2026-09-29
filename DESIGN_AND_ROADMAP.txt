@@ -1,0 +1,1288 @@
+================================================================================
+QR-BASED ACADEMIC CERTIFICATE VERIFICATION SYSTEM
+DESIGN SPECIFICATION AND PHASED DEVELOPMENT ROADMAP
+================================================================================
+
+Project root : D:\MC_final _project\draft two\IBU_Verification
+Module       : :app  (single module)
+Language     : Java 11, XML layouts, View system
+Status       : Code for Phases 0-10 implemented and building. Phase 11 not built.
+Verified     : :app:assembleDebug, :app:testDebugUnitTest (23 tests),
+               tools/run_tools.bat (crypto self test + 11 QR fixtures)
+Date         : 2026-09-29
+
+
+================================================================================
+1. ARCHITECTURE OVERVIEW
+================================================================================
+
+The app is a fully offline certificate verifier. A college prints a certificate
+with a QR code whose payload is an obfuscated, checksummed certificate ID. The
+student shows the certificate; the app scans the code, walks it through an
+ordered gate sequence, and either displays the certificate record or refuses the
+code with one precise reason while leaving the camera running. There is no
+server, no account, no network permission, and no second screen beyond the four
+described here.
+
+The design separates two things that are easy to confuse. The QR payload is
+OBFUSCATION, not cryptography: its algorithm is public and its only job is to
+stop a human reading the ID off the paper and to make hand-editing detectable via
+a position-weighted checksum. The real cryptography sits in the database, where
+every column is encrypted at rest with AES-256-GCM, and it is protected at
+lookup time by a deterministic SHA-256 hash column, because a fresh random salt
+per value makes encrypted text impossible to search.
+
+Layered view of a single scan:
+
+    +---------------------------------------------------------------+
+    |  ScannerActivity  (UI, camera, torch, red banner)              |
+    |  zxing-android-embedded 4.3.0  DecoratedBarcodeView            |
+    +-----------------------------+---------------------------------+
+                                  |  raw scanned text
+    +-----------------------------v---------------------------------+
+    |  Layer B  GateSequence            gates 0, 0b, 1, 2, 3, 4      |
+    |  first failing gate decides; only gate 4 may act               |
+    +------+--------------------------+------------------------------+
+           |                          |
+    +------v--------------------+  +--v-----------------------------+
+    | Layer A                   |  | Layer C  EncryptionHelper     |
+    | CertificatePayloadCodec   |  | AES-256-GCM, PBKDF2 10k,     |
+    | IBU1 + 64-char alphabet   |  | per-value salt and IV         |
+    | block reversal + checksum |  +--+-----------------------------+
+    +------+--------------------+     |
+           | certificateId            |
+    +------v-------------------------v-----------------------------+
+    |  Layer D  HashUtil.certIdHash  SHA-256(id + pepper)           |
+    |  CertificateRepository  WHERE cert_id_hash = ?                |
+    |  CertificateDbHelper   SQLiteOpenHelper, table certificates   |
+    +---------------------------------------------------------------+
+
+Result routing:
+
+    FOUND     -> VerificationActivity  (VALID, green tick, full record)
+    NOT_FOUND -> NotFoundActivity      (INVALID, red icon, scanned ID)
+    REFUSED   -> stay on ScannerActivity, red banner, camera keeps running
+    IGNORED   -> nothing at all (gate 0b: a result screen is already opening)
+
+
+================================================================================
+2. PACKAGE AND CLASS STRUCTURE
+================================================================================
+
+app/src/main/java/com/example/ibu_verification/
+|
+|-- AppGraph.java                  Tiny hand-rolled holder. Builds the
+|                                  SQLiteOpenHelper, EncryptionHelper and
+|                                  CertificateRepository in one place so each
+|                                  Activity can do "new AppGraph(this)".
+|                                  This is NOT a DI framework - there are no
+|                                  annotations, no scopes, no generated code.
+|
+|-- HomeActivity.java              Screen 1. Seeds on first launch, one button
+|                                  that starts ScannerActivity.
+|
+|-- ScannerActivity.java           Screen 2. Camera, torch, decode callback,
+|                                  gate execution on a worker thread, red
+|                                  banner, result navigation. The only place
+|                                  that touches DecoratedBarcodeView.
+|
+|-- VerificationActivity.java      Screen 3. Renders the Certificate passed in
+|                                  as a Serializable Intent extra.
+|
+|-- NotFoundActivity.java          Screen 4. Renders the scanned ID string
+|                                  extra, INVALID badge, Try Again.
+|
+|-- model/
+|   |-- Certificate.java           Plain POJO, 9 fields + getters/setters.
+|   |                              implements Serializable so it can ride in
+|   |                              an Intent without a Parcelable ceremony.
+|
+|-- db/
+|   |-- CertificateDbHelper.java   extends SQLiteOpenHelper. Owns the DDL,
+|   |                              the unique index, onCreate, onUpgrade
+|   |                              (table rebuild at v2), onDowngrade.
+|   |-- CertificateRepository.java implements CertificateLookup. Encrypts on
+|   |                              write, decrypts on read, performs the
+|   |                              deterministic hash lookup.
+|   |-- CertificateSeeder.java     Inserts the 7 sample records once, through
+|   |                              the repository, so seeding exercises the
+|   |                              same encryption path as real data.
+|
+|-- security/
+|   |-- CertificatePayloadCodec.java  Layer A. Static. encode() / decode() /
+|   |                                  hasMarker(). Pure Java, no Android
+|   |                                  imports, so the desktop fixture tool
+|   |                                  compiles and runs the SAME class.
+|   |-- GateSequence.java          Layer B. evaluate(scannedText, resultOpen).
+|   |-- GateResult.java            Layer B output. Kind + Reason enums.
+|   |-- CertificateLookup.java    One-method interface. Exists purely so
+|   |                              GateSequence can be unit tested on the JVM
+|   |                              without a device.
+|   |-- EncryptionHelper.java     Layer C. AES-256-GCM + PBKDF2WithHmacSHA256.
+|   |-- HashUtil.java             Layer D. SHA-256(id + pepper) -> 64 hex.
+|
+|-- util/
+|   (empty by design - nothing in the current design needs it. Do not add
+|    code here "just in case".)
+
+tools/                              Desktop-only, outside the Android source set
+|-- java/tools/
+|   |-- SampleRecords.java         The 7 IDs and the negative-case fixtures.
+|   |-- Base64Codec.java           java.util.Base64 wrapper for the self test.
+|   |-- CryptoSelfTest.java        Five AES-GCM / PBKDF2 checks, pass/fail lines.
+|   |-- QrFixtureGenerator.java    Writes sample_qr_codes/encoded and /plain,
+|                                  runs four independent checks per fixture.
+|-- run_tools.bat                  Compiles and runs both tools.
+|-- build/                         Generated. Git ignored.
+
+Key design decision: `security/` contains no Android imports except
+`android.util.Base64` and `android.util.Log` inside EncryptionHelper. Everything
+else there is plain Java, which is why the desktop tool can reuse the real codec
+rather than a copy that would silently drift.
+
+
+================================================================================
+3. LAYER-BY-LAYER DESIGN
+================================================================================
+
+--------------------------------------------------------------------------------
+LAYER A - CertificatePayloadCodec  (OBFUSCATION, NOT ENCRYPTION)
+--------------------------------------------------------------------------------
+
+Stated plainly: this algorithm is public, holds no secret key, and must never be
+described as providing confidentiality. Its two real benefits are that a human
+cannot read the certificate ID off the printed paper, and that the position
+weighted checksum detects hand editing. An attacker with the source can encode
+any ID they like. Only Layer C and Layer D protect the data.
+
+Alphabet (deliberately NOT Base64 - note the absence of + / and =):
+
+    index   0..25   A..Z
+    index  26..51   a..z
+    index  52..61   0..9
+    index  62       -
+    index  63       _
+
+Marker: IBU1, prepended on encode, located with indexOf on decode. Locating by
+marker rather than by position is what lets the payload survive being printed
+inside a longer string such as https://ibu.edu/verify?code=IBU1...
+
+Algorithm, in order:
+
+  1. LENGTH HEADER. Two 6-bit groups carry the UTF-8 byte length, 12 bits total,
+     capped at MAX_PLAIN_LENGTH (120). Without this the decoder cannot know how
+     many of the trailing groups are real data and how many are block padding.
+
+  2. SIX-BIT CONVERSION. Each UTF-8 byte becomes two 6-bit values, low six bits
+     first and the remaining top two bits second, shifted left four places so the
+     unused low nibble is always zero:
+
+         low  = byte & 0x3F
+         high = (byte >> 6) << 4
+
+     Emitting low first (rather than high first) means the entropy-heavy bits
+     appear at the front of the payload, which is where block reversal scatters
+     them furthest from their neighbours.
+
+  3. BLOCK REVERSAL. The group list is zero padded to a multiple of BLOCK_SIZE
+     (5), then each block of five is reversed in place. Reversal is its own
+     inverse, so a single reverseBlocks() method both scrambles and unscrambles.
+     Example, one block: [a b c d e] -> [e d c b a].
+
+  4. POSITION-WEIGHTED CHECKSUM. One character is appended:
+
+         checksum = ( SUM over i of (value_i + 1) * (i + 1) ) mod 64
+
+     This is computed over the SCRAMBLED sequence, i.e. over exactly the
+     characters the scanner will read, so it covers the padding too. The position
+     weighting is what makes it detect a swapped pair of characters, which a
+     plain sum cannot see: swapping characters at positions p and q changes the
+     sum by (value_q - value_p) * (p - q), which is non-zero for any distinct
+     characters at distinct positions.
+
+  5. MARKER. IBU1 is prepended, the checksum character last.
+
+  6. VALIDATION. decode() rejects a missing marker, a body longer than
+     MAX_BODY_LENGTH, a body length that is not a multiple of 5 plus one, any
+     character outside the IBU alphabet, a declared length that disagrees with
+     the body size, non-zero padding, a bad checksum, a low group whose low
+     nibble is not zero, and a decoded result that does not match the ID pattern.
+
+ID pattern: see the deviation note in section 10 (Advisory). As implemented:
+
+     ^CER[0-9]IB[A-Z0-9]+U[A-Z0-9]+$
+
+Worked example, produced by the fixture tool:
+
+     CER1IBAU0001  ->  IBU1FQDMAAxQSQBQCQJAwQVQwAwAwAAAAAi
+
+Code (app/src/main/java/com/example/ibu_verification/security/CertificatePayloadCodec.java):
+
+```java
+public static String encode(String plainCertificateId) {
+    if (plainCertificateId == null || plainCertificateId.isEmpty()) {
+        throw new IllegalArgumentException("Certificate ID must not be empty");
+    }
+    if (!VALID_ID.matcher(plainCertificateId).matches()) {
+        throw new IllegalArgumentException("Certificate ID does not match " + VALID_ID.pattern());
+    }
+    byte[] raw = plainCertificateId.getBytes(UTF8);
+    if (raw.length > MAX_PLAIN_LENGTH) {
+        throw new IllegalArgumentException("Certificate ID longer than " + MAX_PLAIN_LENGTH + " bytes");
+    }
+
+    List<Integer> values = new ArrayList<>();
+    values.add((raw.length >> 6) & 0x3F);
+    values.add(raw.length & 0x3F);
+    for (byte b : raw) {
+        int unsigned = b & 0xFF;
+        values.add(unsigned & 0x3F);
+        values.add((unsigned >> 6) << 4);
+    }
+
+    int padded = (values.size() + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE;
+    while (values.size() < padded) {
+        values.add(0);
+    }
+
+    List<Integer> scrambled = reverseBlocks(values, BLOCK_SIZE);
+    int checksum = weightedChecksum(scrambled);
+
+    StringBuilder builder = new StringBuilder();
+    builder.append(MARKER);
+    for (int value : scrambled) {
+        builder.append(ALPHABET[value]);
+    }
+    builder.append(ALPHABET[checksum]);
+    return builder.toString();
+}
+
+static int weightedChecksum(List<Integer> scrambled) {
+    int sum = 0;
+    for (int i = 0; i < scrambled.size(); i++) {
+        sum = (sum + (scrambled.get(i) + 1) * (i + 1)) % ALPHABET_SIZE;
+    }
+    return sum;
+}
+
+static List<Integer> reverseBlocks(List<Integer> values, int blockSize) {
+    List<Integer> out = new ArrayList<>(values.size());
+    for (int start = 0; start < values.size(); start += blockSize) {
+        int end = Math.min(start + blockSize, values.size());
+        for (int i = end - 1; i >= start; i--) {
+            out.add(values.get(i));
+        }
+    }
+    return out;
+}
+```
+
+decode() mirrors the above in reverse order, then validates length, padding,
+checksum, six-bit pair shape, and the ID pattern before returning.
+
+
+--------------------------------------------------------------------------------
+LAYER B - GateSequence
+--------------------------------------------------------------------------------
+
+An ordered sequence in which the first gate to fail decides the outcome, and no
+failure path ever reaches the database or a result screen.
+
+  Gate 0   empty or blank read            -> "No QR code detected"
+  Gate 0b  a result screen is opening     -> IGNORED, absolutely nothing happens
+  Gate 1   payload contains SQR1          -> "Secure certificate not supported"
+  Gate 2   payload lacks IBU1             -> "Plain Certificate ID not accepted"
+                                            or "Not a certificate QR code"
+  Gate 3   codec decode / checksum fails  -> "The QR code is damaged or has been altered."
+  Gate 4   the only gate allowed to act  -> FOUND or NOT_FOUND
+
+Gate 2 is the security check and it is a hard stop. When the IBU1 marker is
+absent the code does not look anything up, does not pull out a regex match, and
+does not try a fallback interpretation. It returns one of two distinct messages
+purely so the user learns something useful: if the scanned text is shaped like a
+bare certificate ID the app says the plain form is rejected, and for anything
+else (a URL, a Wi-Fi code, a random string) it says this is not a certificate QR
+code at all.
+
+THE CAMERA-PAUSE PLACEMENT CONSTRAINT
+
+This is the single most important implementation rule in the whole scanner, and
+it is easy to break while "tidying up" the code.
+
+The call that pauses the camera and the flag that says a result screen is
+opening must sit at the TOP of Gate 4 - never at the top of the evaluate() method
+or the top of the decode callback.
+
+If either is set too early, the very first refused code freezes the scanner: the
+camera stops, no result screen ever opens, nothing clears the flag, and the user
+cannot scan anything again without killing the app. There is no code path that
+recovers, because the only place that clears those flags is the return from a
+result screen, which never happens.
+
+The implementation keeps this safe by splitting responsibility:
+
+  - ScannerActivity.openResult() is the ONLY method that sets resultOpened and
+    calls barcodeView.pause(). It begins with an explicit guard on
+    GateResult.Kind, so it can only ever be reached from a Gate 4 result.
+  - GateSequence.evaluate() is a pure function of its arguments. It never
+    touches the camera and never touches flags. The resultAlreadyOpen parameter
+    is how the UI tells the gates that Gate 4 has already fired.
+
+Refusals go through showRefusal(), which sets the banner, clears the
+waitingForLookup latch and calls startScanning() again - the camera never stops
+for a refusal.
+
+Code (app/src/main/java/com/example/ibu_verification/security/GateSequence.java):
+
+```java
+public GateResult evaluate(String scannedText, boolean resultAlreadyOpen) {
+    if (resultAlreadyOpen) {
+        return GateResult.ignored();
+    }
+
+    if (scannedText == null || scannedText.trim().isEmpty()) {
+        return GateResult.refuse(GateResult.Reason.NO_QR_DETECTED);
+    }
+
+    if (scannedText.contains(MARKER_SECURE)) {
+        return GateResult.refuse(GateResult.Reason.SECURE_UNSUPPORTED);
+    }
+
+    if (!scannedText.contains(MARKER_IBU1)) {
+        if (looksLikePlainCertificateId(scannedText)) {
+            return GateResult.refuse(GateResult.Reason.PLAIN_ID_REJECTED);
+        }
+        return GateResult.refuse(GateResult.Reason.NOT_A_CERTIFICATE);
+    }
+
+    String certificateId;
+    try {
+        certificateId = CertificatePayloadCodec.decode(scannedText);
+    } catch (CertificatePayloadCodec.PayloadException e) {
+        return GateResult.refuse(GateResult.Reason.CODE_DAMAGED);
+    }
+
+    return gateFour(certificateId);
+}
+
+private GateResult gateFour(String certificateId) {
+    try {
+        Certificate certificate = lookup.findByCertificateId(certificateId);
+        if (certificate == null) {
+            return GateResult.notFound(certificateId);
+        }
+        return GateResult.found(certificateId, certificate);
+    } catch (EncryptionHelper.EncryptionException e) {
+        return GateResult.refuse(GateResult.Reason.STORE_UNREADABLE);
+    }
+}
+```
+
+The gate methods return a Reason enum rather than a finished sentence, so the
+security package stays free of Android resource references and the UI owns the
+wording. ScannerActivity.messageFor() maps Reason to a string resource.
+
+Gates are executed on a single background thread. Decryption is PBKDF2 with
+10 000 iterations across nine columns, which is far too slow for the main thread.
+
+
+--------------------------------------------------------------------------------
+LAYER C - EncryptionHelper  (real cryptography)
+--------------------------------------------------------------------------------
+
+Algorithm: AES-256-GCM.
+Key derivation: PBKDF2WithHmacSHA256, 10 000 iterations, fresh 16-byte random
+salt per value, 256-bit output key.
+IV: fresh 12-byte random value (96-bit) per value, the GCM standard.
+Auth tag: 128 bits.
+Stored layout: Base64( 16-byte salt || 12-byte IV || AES-GCM ciphertext+tag ).
+
+A fresh salt and a fresh IV per value is mandatory for GCM: reusing either with
+the same key destroys the security of the whole table.
+
+Secret material. `app/build.gradle.kts` checks for encryption.properties at the
+repository root. If the file does not exist it generates two 32-byte random hex
+secrets with SecureRandom and writes the file, so a fresh clone builds with zero
+manual setup. The values are injected as buildConfigField:
+
+    buildConfigField("String", "CERT_MASTER_SECRET", ...)
+    buildConfigField("String", "CERT_HASH_PEPPER", ...)
+
+The file is listed in .gitignore and must never be committed.
+
+Degradation path. If the pepper arrives empty (someone deleted the file after a
+build, or a release was assembled with an empty field), EncryptionHelper does NOT
+crash at startup. It logs an error once, sets active = false, and every
+encrypt()/decrypt() call becomes a pass-through. The app stays usable and
+readable; it simply stops protecting anything at rest, and the log line is the
+signal. A hard crash here would brick the app with no way for a non-technical
+user to recover.
+
+Code (app/src/main/java/com/example/ibu_verification/security/EncryptionHelper.java):
+
+```java
+public EncryptionHelper(String pepper) {
+    this.pepper = pepper == null ? new char[0] : pepper.toCharArray();
+    this.active = this.pepper.length > 0;
+    if (!active) {
+        Log.e(TAG, "Master secret is empty. Storing values as plain text.");
+    }
+}
+
+public String encrypt(String plainText) throws EncryptionException {
+    if (plainText == null) {
+        throw new IllegalArgumentException("Value to encrypt must not be null");
+    }
+    if (!active) {
+        return plainText;
+    }
+    try {
+        byte[] salt = new byte[SALT_LENGTH_BYTES];
+        byte[] iv = new byte[IV_LENGTH_BYTES];
+        random.nextBytes(salt);
+        random.nextBytes(iv);
+
+        Cipher cipher = Cipher.getInstance(CIPHER);
+        cipher.init(Cipher.ENCRYPT_MODE, deriveKey(salt),
+                new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv));
+        byte[] cipherText = cipher.doFinal(plainText.getBytes(UTF8));
+
+        byte[] blob = new byte[salt.length + iv.length + cipherText.length];
+        System.arraycopy(salt, 0, blob, 0, salt.length);
+        System.arraycopy(iv, 0, blob, salt.length, iv.length);
+        System.arraycopy(cipherText, 0, blob, salt.length + iv.length, cipherText.length);
+        return android.util.Base64.encodeToString(blob, android.util.Base64.NO_WRAP);
+    } catch (GeneralSecurityException e) {
+        throw new EncryptionException("Could not encrypt value: " + e.getMessage(), e);
+    }
+}
+
+private SecretKey deriveKey(byte[] salt) throws GeneralSecurityException {
+    SecretKeyFactory factory = SecretKeyFactory.getInstance(KEY_ALGORITHM);
+    PBEKeySpec spec = new PBEKeySpec(pepper, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS);
+    try {
+        return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), "AES");
+    } finally {
+        spec.clearPassword();
+    }
+}
+}
+
+
+--------------------------------------------------------------------------------
+LAYER D - HashUtil  (the key insight)
+--------------------------------------------------------------------------------
+
+Encrypted values cannot be searched. Because every encryption uses a fresh random
+salt and a fresh random IV, encrypting the same certificate ID twice produces two
+completely different ciphertext strings. A query of the form
+
+    WHERE certificate_id = ?
+
+can therefore never match, no matter how obviously correct it looks. The bug
+would not throw; it would simply always return "not found", and it would be
+extremely hard to spot, because the encryption code is provably correct.
+
+The fix is a second column, cert_id_hash, holding
+
+    SHA-256( id + pepper )      rendered as 64 lowercase hex characters
+
+The hash is not reversible, but it is deterministic: the same ID and the same
+pepper always produce the same 64 characters. So the lookup becomes
+
+    WHERE cert_id_hash = ?
+
+which matches. The pepper is mixed in to defeat precomputed dictionary attacks -
+without it, anyone holding the database could test every plausible ID against a
+rainbow table; with it, the correct pepper is required, and it lives in
+BuildConfig rather than in the database file.
+
+THIS IS WHY THE SCHEMA STORES THE ID TWICE. certificate_id exists so the value
+can be displayed to the verifier and so the record round-trips. cert_id_hash
+exists purely so the row can be FOUND. Neither column can do the other's job:
+one is random and unsearchable, the other is one-way and unreadable. This is the
+single most commonly misunderstood decision in the design, and any future change
+that "simplifies" it by deleting cert_id_hash will silently break all lookups.
+
+The repository is the only place that may query this table. No Activity, and
+certainly no gate, ever builds a SQL string from a scanned value.
+
+Code (app/src/main/java/com/example/ibu_verification/security/HashUtil.java):
+
+```java
+public static String certIdHash(String certificateId, String pepper) {
+    try {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        digest.update(certificateId.getBytes(UTF8));
+        digest.update(pepper.getBytes(UTF8));
+        return toHex(digest.digest());
+    } catch (NoSuchAlgorithmException e) {
+        throw new IllegalStateException("SHA-256 is not available on this device", e);
+    }
+}
+```
+
+
+--------------------------------------------------------------------------------
+LAYER E - ASYMMETRIC SECURE QR  (NOT BUILT - decision recorded)
+--------------------------------------------------------------------------------
+
+DECISION: this phase is NOT wired. The reference app recognises SQR1 at Gate 1
+and refuses it with "Secure certificate not supported", and that is the shipped
+behaviour.
+
+Justification. Layer E is the only part of this design that addresses a real
+threat the other layers do not: an attacker who obtains a legitimate ID and
+generates his own valid-looking QR. Layers A through D cannot stop that, because
+the codec is public by design. A signature from the issuing authority can.
+
+It is out of scope for a first shippable APK for three reasons. It needs a key
+distribution story the college does not yet have. It makes the verifier unable
+to work on certificates issued before the keys existed, which for a demo with
+seven seed records is every record. And it is a real cryptographic protocol
+needing its own threat model, test vectors and review, which does not belong in a
+phase that is otherwise about a camera and a table.
+
+Design for when it is adopted. A hybrid envelope:
+
+    SQR1 || version || issuer_key_id (8 bytes) ||
+           RSA-OAEP-SHA256( reader_public_key,
+                            AES-256-GCM( HKDF(inner_key), payload ) ) ||
+           RSA-PSS-SHA256( signing_private_key, everything above )
+
+RSA-2048, RSA/ECB/OAEPPadding, MGF1-SHA-256. The verifier needs only the issuing
+authority's signing PUBLIC key; the reader's private key never leaves the device.
+Inner keys come from HKDF rather than from a fixed constant. Gate 1's existing
+refusal is already the correct entry point, so adoption would be a change inside
+Gate 1, not a rewrite of the flow.
+
+
+================================================================================
+4. DATA MODEL AND SCHEMA
+================================================================================
+
+Table: certificates. Exactly 11 columns.
+
+  Column               Type       Null  Contents
+  -------------------  ---------  ----  ---------------------------------------
+  id                   INTEGER    no    PRIMARY KEY AUTOINCREMENT, local only
+  certificate_id       TEXT       no    AES-GCM encrypted, Base64 blob
+  cert_id_hash         TEXT       no    SHA-256(id+pepper) hex, UNIQUE indexed
+  student_name         TEXT       no    encrypted
+  roll_number          TEXT       no    encrypted
+  enrollment_number    TEXT       no    encrypted
+  course_name          TEXT       no    encrypted
+  university_name      TEXT       no    encrypted
+  passing_year         TEXT       no    encrypted (int stored as its string
+                                         form, because ciphertext is text)
+  percentage           TEXT       no    encrypted
+  certificate_type     TEXT       no    encrypted
+
+Note on passing_year: it is TEXT, not INTEGER. Every column except the two ID
+columns is encrypted, and ciphertext is a Base64 string, so declaring it INTEGER
+would be a lie about its type. The repository converts with String.valueOf() on
+write and Integer.parseInt() after decryption.
+
+DATABASE_VERSION = 2.
+
+DDL (CertificateDbHelper.java):
+
+```java
+public static final String CREATE_TABLE =
+        "CREATE TABLE " + TABLE + " ("
+                + COL_PK + " INTEGER PRIMARY KEY AUTOINCREMENT, "
+                + COL_ID + " TEXT NOT NULL, "
+                + COL_HASH + " TEXT NOT NULL, "
+                + COL_NAME + " TEXT NOT NULL, "
+                + COL_ROLL + " TEXT NOT NULL, "
+                + COL_ENROLLMENT + " TEXT NOT NULL, "
+                + COL_COURSE + " TEXT NOT NULL, "
+                + COL_UNIVERSITY + " TEXT NOT NULL, "
+                + COL_YEAR + " TEXT NOT NULL, "
+                + COL_PERCENTAGE + " TEXT NOT NULL, "
+                + COL_TYPE + " TEXT NOT NULL)";
+
+public static final String CREATE_HASH_INDEX =
+        "CREATE UNIQUE INDEX idx_cert_hash ON " + TABLE + " (" + COL_HASH + ")";
+```
+
+The unique index on cert_id_hash does double duty: it is the lookup index, and
+it makes a duplicate certificate ID impossible to insert.
+
+The version 1 -> 2 migration, and why it is a table rebuild:
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        for (int version = oldVersion + 1; version <= newVersion; version++) {
+            if (version == 2) {
+                rebuildEncryptedTable(db);
+            }
+        }
+    }
+
+    private void rebuildEncryptedTable(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE " + TABLE + " RENAME TO " + TABLE + "_old");
+        db.execSQL(CREATE_TABLE);
+        db.execSQL(CREATE_HASH_INDEX);
+        db.execSQL("DROP TABLE " + TABLE + "_old");
+    }
+
+Version 2 adds cert_id_hash and converts the student columns from plaintext to
+ciphertext. A rebuild is used rather than ALTER TABLE ADD COLUMN because the
+change is not additive: existing rows would hold plaintext in a column that now
+expects ciphertext, and there is no way to tell them apart in SQL - only the
+application knows which is which. Rename, recreate with the correct schema, drop
+the old table. SQLite DDL is transactional inside onUpgrade, so a crash
+midway rolls back rather than leaving a half-migrated database.
+
+Note that this path is written but has never executed against a real v1
+database, because this project has only ever shipped as a fresh install. Treat
+it as untested until a v1 fixture database exists.
+
+onDowngrade drops and recreates. That destroys data, which is acceptable only
+because the database is a cache of records that can be re-seeded - never do this
+in an app with data the user cannot regenerate.
+
+Seeding. CertificateSeeder.seedIfEmpty() inserts 7 records the first time
+HomeActivity runs, through CertificateRepository, so every seeded value is
+encrypted on the way in exactly like real data. Seed IDs are
+CER1IBAU0001 .. CER3IBAU0007 with names, courses, years and percentages listed
+in tools/java/tools/SampleRecords.java.
+
+The seed set deliberately contains BOTH kinds of fixture, because a demo that
+only shows happy paths proves nothing:
+
+  valid, must open VerificationActivity:
+      IBU1FQDMAAxQSQBQCQJAwQVQwAwAwAAAAAi   (CER1IBAU0001)
+      and the other six encoded images
+
+  valid format, no such record, must open NotFoundActivity:
+      encode("CER1IBAU9999")
+
+  must be refused at gate 2, camera keeps running:
+      CER1IBAU0001                          bare ID
+      https://example.edu/verify?id=7        a URL
+      WIFI:S=CampusNet;T=WPA;P=secret;;     a Wi-Fi code
+
+  must be refused at gate 1:
+      SQR1AAAABBBBCCCCDDDDEEEE
+
+  must be refused at gate 3, damaged banner:
+      any encoded fixture with one character edited
+
+
+================================================================================
+5. SCREEN-BY-SCREEN SPEC
+================================================================================
+
+Shared across all four screens: AppBarLayout + MaterialToolbar, blue
+(@color/primary_blue), white title text, via style AppToolbar. The theme is
+Theme.MaterialComponents.Light.NoActionBar in BOTH values/ and values-night/, so
+dark mode keeps the white background and blue toolbar instead of silently
+inverting to a dark scheme.
+
+MaterialButton ignores android:background, so button colour is set with
+app:backgroundTint. Setting android:background on a MaterialButton does nothing
+and looks like a mysterious failure. The outlined "Go to Home Screen" button uses
+app:strokeColor plus app:strokeWidth with backgroundTint set to white.
+
+--------------------------------------------------------------------------------
+1. HomeActivity
+--------------------------------------------------------------------------------
+File: app/src/main/java/com/example/ibu_verification/HomeActivity.java
+Layout: app/src/main/res/layout/activity_home.xml
+Manifest: MAIN / LAUNCHER, exported=true, screenOrientation=portrait
+
+Elements, top to bottom:
+  AppBarLayout + MaterialToolbar     title "IBU Certificate Verifier"
+  ImageView ic_qr_logo               112dp, blue QR glyph
+  TextView textTitle                 "Certificate Verification"  (Headline5)
+  TextView textDescription           "Point the camera at the QR code printed on
+                                     a certificate to confirm it is genuine."
+  MaterialButton buttonScan          "Scan QR Code", 58dp, backgroundTint blue
+
+Exactly one button, as required. onCreate seeds the database, then the button
+starts ScannerActivity.
+
+--------------------------------------------------------------------------------
+2. ScannerActivity
+--------------------------------------------------------------------------------
+File: app/src/main/java/com/example/ibu_verification/ScannerActivity.java
+Layout: app/src/main/res/layout/activity_scanner.xml
+Scanner chrome: app/src/main/res/layout/view_scanner.xml
+Manifest: configChanges="orientation|screenSize|keyboardHidden",
+          screenOrientation=portrait, exported=false
+
+Elements:
+  AppBarLayout + MaterialToolbar     "Scan Certificate QR", up-arrow enabled
+  DecoratedBarcodeView               full width, fills the space under the
+                                     toolbar and above the banner
+  view_scanner (custom chrome)       ViewfinderView with blue laser and mask,
+                                     plus bottom hint "Hold steady over the QR
+                                     code" in white
+  ImageButton buttonTorch             bottom-right FAB-style torch toggle
+  ProgressBar progressChecking       centred spinner, gone unless a lookup is
+                                     running
+  TextView bannerRefusal             RED bar pinned to the bottom, gone by
+                                     default, white Subtitle2 text
+
+There is NO manual certificate-ID entry field. The ID is always read from the QR
+code. Adding one would create a second path to Gate 4 that bypasses the whole
+gate sequence, which is precisely the thing this design exists to prevent.
+
+Scanner behaviour:
+  - Camera permission requested at runtime. Denial hides the preview and shows
+    "Camera access is needed to scan a QR code. Enable it in Settings."
+  - Torch toggles via DecoratedBarcodeView.setTorchOn/setTorchOff and flips its
+    own contentDescription between on and off states.
+  - Decoder is restricted to BarcodeFormat.QR_CODE with TRY_HARDER, so a barcode
+    or a 1D code cannot trigger the gates.
+  - The callback pauses the view and dispatches to a worker thread.
+  - A waitingForLookup latch stops a still-in-frame code from being submitted
+    ten times a second.
+  - Refusals set the banner and restart scanning. Nothing navigates.
+
+--------------------------------------------------------------------------------
+3. VerificationActivity
+--------------------------------------------------------------------------------
+File: app/src/main/java/com/example/ibu_verification/VerificationActivity.java
+Layout: app/src/main/res/layout/activity_verification.xml
+Manifest: exported=false, portrait
+
+Elements:
+  AppBarLayout + MaterialToolbar     "Certificate Verified"
+  ImageView imageVerified            ic_verified, green tick, 80dp
+  TextView badgeValid                "VALID", bg_status_valid (green pill)
+  CardView cardDetails               DetailCard, scrollable
+      Student Name             Aarav Sharma
+      Roll Number             IBU2026CS001
+      Enrollment Number       ENR20260001
+      Course                  B.Tech Computer Science
+      University              iB University
+      Year of Passing         2026
+      Percentage / CGPA       88.40
+      Certificate Type        Degree
+  TextView textVerifiedOn            "Verified on 29 Sep 2026, 14:05"
+  MaterialButton buttonScanAnother   "Scan Another Certificate", filled blue
+  MaterialButton buttonGoHome        "Go to Home Screen", outlined
+
+The Certificate arrives as a Serializable Intent extra. If the extra is missing
+the Activity finishes immediately rather than rendering a screen full of nulls.
+
+Buttons: Scan Another sets RESULT_OK and finishes, returning to the still-armed
+scanner. Go Home starts HomeActivity with FLAG_ACTIVITY_CLEAR_TOP and finishes,
+so Back from Home leaves the app instead of returning to the scanner.
+
+--------------------------------------------------------------------------------
+4. NotFoundActivity
+--------------------------------------------------------------------------------
+File: app/src/main/java/com/example/ibu_verification/NotFoundActivity.java
+Layout: app/src/main/res/layout/activity_not_found.xml
+Manifest: exported=false, portrait
+
+Elements:
+  AppBarLayout + MaterialToolbar     "Certificate Not Found"
+  ImageView imageError               ic_error, red, 88dp
+  TextView textTitle                 "Certificate Not Found"  (Headline6)
+  TextView badgeInvalid              "INVALID", bg_status_invalid (red pill)
+  TextView labelScannedId            "Scanned certificate ID"  (Caption)
+  TextView textScannedId             monospace, e.g. CER1IBAU9999
+  MaterialButton buttonTryAgain      "Try Again", filled blue
+
+The scanned ID is shown in monospace so the user can read it out or write it
+down. Try Again returns RESULT_OK and finishes to the scanner.
+
+--------------------------------------------------------------------------------
+Resources
+--------------------------------------------------------------------------------
+  values/colors.xml      primary_blue #1565C0, primary_blue_dark #0D47A1,
+                         accent_teal #00897B, status_valid_green #1B873B,
+                         status_invalid_red #C62828, screen_background white,
+                         card_background #F7F9FC, text_primary, text_secondary,
+                         divider_grey, white, black
+  values/strings.xml     every user-visible string, including all six gate
+                         messages, so no user-facing text is hardcoded in Java
+  values/themes.xml      Theme.IBUVerifier + AppToolbar, DetailCard,
+                         DetailLabel, DetailValue styles
+  values-night/themes.xml  the SAME light theme, repeated on purpose
+  drawable/ic_qr_logo.xml, ic_verified.xml, ic_error.xml,
+           bg_status_valid.xml, bg_status_invalid.xml
+
+
+================================================================================
+6. PHASED ROADMAP
+================================================================================
+
+Each phase is independently verifiable. Phases 0-10 are implemented in this
+repository and marked DONE; phase 11 is recorded but not built.
+
+--------------------------------------------------------------------------------
+PHASE 0 - Scaffold, build config, manifest, theme
+--------------------------------------------------------------------------------
+Goal: an empty app that builds and installs.
+Tasks:
+  1. Create the :app module, single module, no other modules.
+  2. gradle/libs.versions.toml with every version and artifact alias.
+  3. app/build.gradle.kts: AGP 9.3.3, Java 11, buildFeatures { buildConfig = true }.
+  4. Auto-generate encryption.properties in Gradle when absent; expose
+     CERT_MASTER_SECRET and CERT_HASH_PEPPER via buildConfigField.
+  5. AndroidManifest: CAMERA permission, uses-feature camera required="false",
+     allowBackup="false", backup rules excluding the database.
+  6. Light theme with blue primary; mirror it into values-night.
+Files: gradle/libs.versions.toml, build.gradle.kts, settings.gradle.kts,
+       gradle.properties, app/build.gradle.kts, app/src/main/AndroidManifest.xml,
+       app/src/main/res/values/{colors,themes,strings}.xml,
+       app/src/main/res/values-night/themes.xml,
+       app/src/main/res/xml/{backup_rules,data_extraction_rules}.xml
+Acceptance:
+  - ./gradlew assembleDebug succeeds.
+  - encryption.properties appears at the repo root after the first build and is
+    listed in .gitignore.
+  - Removing encryption.properties and rebuilding regenerates a different one and
+    the build still succeeds.
+  - lintDebug reports zero errors.
+  - aapt2 dump xmltree on the APK shows android.hardware.camera required="false"
+    and no android.permission.INTERNET anywhere.
+Dependencies: none.
+
+--------------------------------------------------------------------------------
+PHASE 1 - Resources
+--------------------------------------------------------------------------------
+Goal: every drawable, colour, style and string the four screens will need.
+Tasks: colors.xml; strings.xml including all six gate messages; themes.xml with
+       AppToolbar/DetailCard/DetailLabel/DetailValue; values-night repeating the
+       light theme; vector drawables ic_qr_logo, ic_verified, ic_error;
+       shape drawables bg_status_valid, bg_status_invalid; the four layouts plus
+       view_scanner.
+Files: app/src/main/res/values/*.xml, values-night/themes.xml, drawable/*.xml,
+       layout/*.xml
+Acceptance: assembleDebug succeeds; every string referenced from a layout
+  resolves (no lint MissingString); dark mode shows a white background and blue
+  toolbar, not an inverted dark theme.
+Dependencies: Phase 0.
+
+--------------------------------------------------------------------------------
+PHASE 2 - Certificate model and DatabaseHelper with hashing
+--------------------------------------------------------------------------------
+Goal: the table exists and can be created and queried.
+Tasks: Certificate POJO implementing Serializable; CertificateDbHelper with the
+       11-column DDL and the unique index on cert_id_hash; HashUtil with
+       SHA-256(id+pepper); CertificateRepository with the hash-based lookup.
+Files: model/Certificate.java, db/CertificateDbHelper.java,
+       db/CertificateRepository.java, security/HashUtil.java
+Acceptance: onCreate produces a table with exactly 11 columns; inserting the same
+  certificate ID twice fails on the unique index; PRAGMA table_info(certificates)
+  lists 11 rows.
+Dependencies: Phase 0.
+
+--------------------------------------------------------------------------------
+PHASE 3 - EncryptionHelper and wiring it into the DB
+--------------------------------------------------------------------------------
+Goal: every non-ID column is ciphertext on disk.
+Tasks: EncryptionHelper with AES-256-GCM, PBKDF2WithHmacSHA256 x10000, fresh
+       16-byte salt and 12-byte IV per value, Base64(salt||iv||ct); repository
+       encrypts on insert and decrypts on read; empty-pepper degradation path
+       that logs and passes values through instead of crashing.
+Files: security/EncryptionHelper.java, db/CertificateRepository.java
+Acceptance: two encryptions of the same string differ; each stored blob decodes
+  to salt.length + iv.length + text.length + 16 bytes; a raw SQLite dump of the
+  database contains none of the student names; with an empty pepper the app
+  launches and one "Master secret is empty" line appears in logcat.
+Dependencies: Phase 2. tools/run_tools.bat gives a desktop equivalent proof.
+
+--------------------------------------------------------------------------------
+PHASE 4 - CertificatePayloadCodec with round-trip tests
+--------------------------------------------------------------------------------
+Goal: encode and decode a certificate ID reversibly, and detect tampering.
+Tasks: 64-character alphabet table; low-6-bits-then-top-2-bits conversion;
+       two-group length header; block reversal in blocks of 5; position-weighted
+       checksum; marker located by indexOf; full validation on decode.
+Files: security/CertificatePayloadCodec.java,
+       app/src/test/java/.../CertificatePayloadCodecTest.java
+Acceptance: every one of the 7 seed IDs round-trips; every single-character edit
+  at every position is rejected; every two-character swap at every position is
+  rejected; an ID embedded in a longer URL still decodes; a body containing
+  '+', '/' or '=' is never produced and standard Base64 fails to decode it.
+Dependencies: Phase 0.  DONE - 10 tests green.
+
+--------------------------------------------------------------------------------
+PHASE 5 - Home screen and navigation
+--------------------------------------------------------------------------------
+Goal: the app opens and can start the scanner.
+Tasks: HomeActivity, activity_home.xml, MAIN/LAUNCHER intent filter,
+       exported="true", seed on first launch.
+Files: HomeActivity.java, layout/activity_home.xml, AndroidManifest.xml,
+       db/CertificateSeeder.java
+Acceptance: the app appears in the launcher and opens HomeActivity; aapt2
+  confirms MAIN + LAUNCHER in the MERGED manifest; the first run inserts 7 rows;
+  a second run does not insert more; tapping the button opens ScannerActivity.
+Dependencies: Phases 1-3.
+
+--------------------------------------------------------------------------------
+PHASE 6 - Scanner screen
+--------------------------------------------------------------------------------
+Goal: a working camera with a decode callback.
+Tasks: ScannerActivity, DecoratedBarcodeView, runtime camera permission with a
+  denial message, torch toggle, QR-only decoder, worker thread, waitingForLookup
+  latch, red banner wired up.
+Files: ScannerActivity.java, layout/activity_scanner.xml, layout/view_scanner.xml
+Acceptance: the preview fills the area between toolbar and banner; permission
+  granted shows a live preview, denied shows the message and hides the preview;
+  the torch visibly changes illumination; scanning a valid fixture fires exactly
+  one callback even while the code stays in frame.
+Dependencies: Phases 1, 5. NOT RUN ON A DEVICE in this environment.
+
+--------------------------------------------------------------------------------
+PHASE 7 - The gate sequence
+--------------------------------------------------------------------------------
+Goal: first failure decides, and refusals never lock the scanner.
+Tasks: GateResult with Kind and Reason; CertificateLookup interface so the gates
+  unit test off-device; GateSequence with gates 0, 0b, 1, 2, 3, 4; the two
+  distinct Gate 2 messages; camera pause and resultOpened confined to
+  openResult() in the Activity.
+Files: security/{GateSequence,GateResult,CertificateLookup}.java,
+       ScannerActivity.java,
+       app/src/test/java/.../GateSequenceTest.java
+Acceptance: onlyGate4ReachesTheLookup asserts the lookup counter is still 0 after
+  empty, blank, SQR1, bare-ID and URL inputs; after a refusal the banner is
+  visible AND the camera is scanning again; a second scan after a refusal works
+  with no app restart; a result opened from one code ignores further codes.
+Dependencies: Phases 4, 6.  DONE - 9 tests green.
+
+--------------------------------------------------------------------------------
+PHASE 8 - Result screens
+--------------------------------------------------------------------------------
+Goal: FOUND and NOT_FOUND render correctly and return cleanly.
+Tasks: VerificationActivity with all eight fields, green tick, VALID badge,
+  timestamp, two buttons; NotFoundActivity with red icon, INVALID badge, scanned
+  ID, Try Again; Serializable extra; finish-on-missing-extra guard.
+Files: VerificationActivity.java, NotFoundActivity.java,
+       layout/activity_verification.xml, layout/activity_not_found.xml
+Acceptance: scanning an encoded seed QR shows the correct name and all eight
+  fields; scanning encode("CER1IBAU9999") shows "Certificate Not Found" and the
+  exact scanned ID; Scan Another returns to a live scanner; Go Home returns to
+  Home and Back from Home exits the app; the layouts do not clip on a small phone.
+Dependencies: Phases 6, 7.
+
+--------------------------------------------------------------------------------
+PHASE 9 - Desktop fixture generator and self-test
+--------------------------------------------------------------------------------
+Goal: printable QR fixtures whose correctness is machine-proven, not assumed.
+Tasks: tools/java/tools/SampleRecords.java; QrFixtureGenerator writing
+  sample_qr_codes/encoded and /plain via zxing core's QRCodeWriter and
+  javax.imageio; four independent checks per encoded fixture; CryptoSelfTest with
+  five pass/fail lines; run_tools.bat.
+Files: tools/java/tools/*.java, tools/run_tools.bat
+Acceptance: the tool refuses to print ALL CHECKS PASSED unless all four checks
+  pass for all 7 IDs; any single-character edit and any two-character swap is
+  rejected; the crypto self test prints five PASS lines and exits 0; 11 PNGs are
+  written and each encoded PNG scans to FOUND on a real device.
+Dependencies: Phase 4.  DONE - all checks pass, 11 PNGs written.
+
+--------------------------------------------------------------------------------
+PHASE 10 - Tests, lint, release hardening
+--------------------------------------------------------------------------------
+Goal: a shippable, demoable APK.
+Tasks: unit tests for codec, gates and hashing; instrumentation test for
+  encryption and the DAO; lint to zero errors; disable backup of the database;
+  confirm no INTERNET permission; release build with a signing config.
+Files: app/src/test/java/**, app/src/androidTest/java/**, .gitignore
+Acceptance: assembleDebug, testDebugUnitTest, lintDebug and assembleRelease all
+  succeed; unit tests pass; the release APK installs and runs the full happy path
+  and all five refusal paths; the database file is absent from any backup.
+Dependencies: Phases 1-9.
+Status: unit tests 23/23 green, lint zero errors, assembleDebug and
+  assembleDebugAndroidTest succeed. The instrumentation test compiles but has
+  NOT been executed - no device or emulator was available in this environment.
+
+--------------------------------------------------------------------------------
+PHASE 11 - Asymmetric secure QR  (NOT BUILT)
+--------------------------------------------------------------------------------
+Goal: cryptographically prove the issuer produced the code.
+Tasks: RSA-2048 keypair for the authority, reader public key enrolment; hybrid
+  envelope per section 3 Layer E; verify signature before any database access;
+  migrate Gate 1 from a hard refusal to a verified path.
+Files: security/SecurePayload.java, util/KeyStoreHelper.java
+Acceptance: a signed code opens VerificationActivity; a code signed by the wrong
+  key is refused with a distinct message; an unsigned SQR1 code is still refused
+  by Gate 1; verifiers holding only the public key can verify.
+Dependencies: Phases 0-10, plus a key distribution decision from the college.
+See the decision note in section 3.
+
+
+================================================================================
+7. RISK REGISTER
+================================================================================
+
+R1  EMULATOR CAMERA DOES NOT READ A REAL QR
+    Likelihood: HIGH. Impact: HIGH.
+    The scanner cannot be demoed at all if the emulator camera will not decode
+    a printed code, and the failure looks like an app bug rather than a tooling
+    one.
+    Mitigation: treat the desktop fixture generator as the primary verification
+    path for Layers A, C and D - it needs no device. For the camera, use a
+    physical device for the end-to-end demo and, on the emulator, feed an image
+    into the virtual scene camera. Configure the decoder with TRY_HARDER and a
+    480px fixture with a 4-module quiet zone.
+    Early warning: a device test that decodes nothing after ten attempts on a
+    clearly visible, well-lit code.
+
+R2  PEPPER ROTATION DESTROYS EVERY ROW  (the data-loss trap)
+    Likelihood: MEDIUM. Impact: CRITICAL.
+    Each row carries its own random salt, and the key is PBKDF2(pepper, salt).
+    Change the pepper and every existing row is permanently undecryptable - not
+    "needs re-seeding", actually gone. The failure surfaces as a flood of
+    "Could not decrypt value".
+    Mitigation: never change the pepper on an existing installation. Documented
+    rotation procedure: (1) record the reason for rotating, (2) export nothing -
+    there is nothing exportable, (3) uninstall the app or run the app's reset
+    path, (4) re-seed from the issuing system, (5) install the new
+    encryption.properties. Treat a pepper change as a data migration, not a
+    config change.
+    Early warning: any "Could not decrypt value" in logcat immediately after a
+    rebuild, which almost always means the pepper file was regenerated.
+
+R3  LAYER A IS NOT CONFIDENTIAL AND WILL BE ASSUMED TO BE
+    Likelihood: HIGH. Impact: MEDIUM.
+    The codec is public and keyless. A reviewer, a marker, or a user may
+    reasonably read "custom 64-character alphabet" as encryption. If someone
+    relies on it to hide certificate numbers, the design has failed at exactly
+    the point it claimed strength.
+    Mitigation: call it obfuscation everywhere - code comments, the design
+    document, the demo narration. Keep the real cryptography in Layer C, where
+    it belongs. The Advisory section exists to make the distinction explicit.
+    Early warning: any slide, README or comment calling Layer A "secure" or
+    "encrypted".
+
+R4  THE CAMERA FREEZES AFTER THE FIRST REFUSAL
+    Likelihood: MEDIUM. Impact: HIGH.
+    This is the placement bug from section 3 Layer B. It makes the app look
+    completely broken on the second scan, and it is invisible in a happy-path
+    demo.
+    Mitigation: confine barcodeView.pause() and resultOpened to openResult(),
+    reachable only from a Gate 4 Kind. Clear waitingForLookup in every exit path
+    from onGateFinished. Test explicitly: refuse, then scan a valid code, with no
+    app restart in between.
+    Early warning: a manual test where the second scan does nothing.
+
+R5  LOOKUP SILENTLY ALWAYS RETURNS NOT FOUND
+    Likelihood: MEDIUM. Impact: CRITICAL.
+    The most likely cause is querying WHERE certificate_id = ? against an
+    encrypted column. It never throws; it just always misses, so every scan
+    lands on NotFoundActivity and the app looks merely "too strict".
+    Mitigation: all lookups go through CertificateRepository and use
+    cert_id_hash. No Activity or gate builds SQL. The gate unit test counts
+    lookup calls. A positive control - a known valid ID must open Verification -
+    is part of the Phase 8 acceptance criteria, so a total lookup failure cannot
+    pass the phase.
+    Early warning: NotFoundActivity opens for a certificate ID you know is in the
+    seed set.
+
+R6  A CHECKSUM COLLISION SLIPS A TAMPERED CODE THROUGH
+    Likelihood: LOW. Impact: MEDIUM.
+    A single 6-bit position-weighted checksum is not a MAC and is not collision
+    resistant; an attacker with the source can search for a collision offline.
+    It is adequate for the intended job - catching accidental damage and casual
+    hand editing - and nothing more.
+    Mitigation: never treat Layer A as the trust boundary. Keep Layer D's
+    peppered hash and Layer C's encryption as the real controls, and treat Layer
+    E as the only real answer to a deliberate forger. The fixture generator's
+    single-edit and swap checks are regression protection, not a proof.
+    Early warning: any proposal to delete Layer D because "the checksum already
+    proves it".
+
+R7  DARK MODE INVERTS THE UI
+    Likelihood: MEDIUM. Impact: LOW.
+    Without values-night/themes.xml repeating the light theme, a DayNight parent
+    would render a dark scheme, breaking the professional look and the white
+    background the design calls for.
+    Mitigation: values-night/themes.xml deliberately re-declares the same light
+    theme. Check the app in dark mode before every release.
+    Early warning: a black home screen on a device in dark mode.
+
+
+================================================================================
+8. TEST MATRIX
+================================================================================
+
+Acceptance criterion                                  Test method
+--------------------------------------------------  --------------------------------
+Phase 0 build succeeds                                gradlew assembleDebug
+Pepper auto-generated and git ignored                 build, then assert file
+                                                      exists and .gitignore lists it
+Camera optional, no INTERNET                          aapt2 dump xmltree on APK
+No backup of the database                             inspect backup_rules.xml and
+                                                      allowBackup=false
+Phase 4 every seed ID round-trips                     CertificatePayloadCodecTest.
+                                                      roundTripWorksForEverySeedId
+Every single-character edit rejected                  .singleCharacterEditIsRejected
+                                                      (loops every position)
+Every two-character swap rejected                     .twoCharacterSwapIsRejected
+                                                      (loops every position)
+Payload uses only the IBU alphabet                    .encodedTextStartsWithMarker
+                                                      AndUsesOnlyIbuAlphabet
+Standard Base64 characters never appear               .standardBase64AlphabetChar
+                                                      actersAreRejected
+Marker found inside longer text                       .markerIsFoundInsideLongerText
+Encode rejects a non-ID string                        .encodeRejectsTextThatIsNotA
+                                                      CertificateId
+Phase 3 ciphertext at rest                            CryptoSelfTest roundTrip +
+                                                      freshSaltPerValue; DAO test
+                                                      asserts no plaintext on disk
+Tamper in ciphertext is rejected                      CryptoSelfTest.
+                                                      tamperRejected
+Wrong pepper cannot decrypt                           CryptoSelfTest.
+                                                      wrongPepperFails
+Blob layout salt+iv+text+tag                          CryptoSelfTest.
+                                                      blobLayoutIsCorrect
+Phase 5 launcher activity is the entry point          aapt2 dump xmltree shows
+                                                      MAIN + LAUNCHER
+First launch seeds exactly 7 rows                     isEmpty() then count() == 7
+Second launch does not re-seed                        run twice, count stays 7
+Phase 6 permission granted shows preview               instrumented UI test
+Permission denied shows message and hides preview     instrumented UI test
+Torch toggles                                        instrumented UI test
+One callback per in-frame code                         waitingForLookup latch
+Phase 7 Gate 0b ignores while a result opens          GateSequenceTest.
+                                                      gate0bIgnoresEverythingWhen
+                                                      ResultIsOpening
+Gate 0 rejects empty and blank                       .gate0RejectsEmptyAndBlank
+Gate 1 refuses SQR1 with the right reason             .gate1RejectsSecurePayload
+Gate 2 refuses a bare ID distinctly                   .gate2RejectsPlainCertificate
+                                                      IdWithItsOwnMessage
+Gate 2 refuses a URL differently                      .gate2RejectsForeignPayload
+                                                      WithDifferentMessage
+Gate 3 refuses a damaged code                         .gate3RejectsDamagedCode
+Only Gate 4 touches the database                      .onlyGate4ReachesTheLookup
+                                                      (asserts lookup count == 0)
+Refusal does not lock the scanner                     manual: refuse, then scan a
+                                                      valid code, no restart
+Phase 8 valid seed QR shows all eight fields          instrumented UI test
+Unknown ID shows the scanned ID                       instrumented UI test
+Scan Another returns to a live scanner                manual
+Go Home then Back exits the app                       manual
+Phase 9 all four fixture checks pass                  tools\run_tools.bat prints
+                                                      ALL CHECKS PASSED
+Fixture generator refuses to pass on a bad payload     delete a check, confirm
+                                                      exit code 1
+Phase 10 no lint errors                               gradlew lintDebug, zero
+                                                      errors
+Release APK installs and demos                        assembleRelease + install
+
+
+================================================================================
+9. DO-NOT-DO LIST
+================================================================================
+
+ 1. Never accept a plain certificate ID from a QR code. Not as a fallback, not
+    "when no marker is present", not behind a setting, not on a long press.
+ 2. Never query the database with a plaintext ID comparison. Only cert_id_hash.
+ 3. Never use java.util.Base64 or android.util.Base64 for the QR payload. The
+    alphabet is custom; standard Base64 must fail to decode it. Base64 is only
+    for storing the AES-GCM blob, which is a different thing.
+ 4. Never pause the camera or set resultOpened before Gate 4.
+ 5. Never add Compose, Kotlin, Room, Hilt, Retrofit or a backend. If one seems
+    necessary, it belongs in the Advisory section, not in the code.
+ 6. Never call the payload codec "encryption". It is obfuscation with an
+    integrity check. Layer C is the encryption.
+ 7. Never add a manual certificate-ID entry field.
+ 8. Never add a fifth screen - no sample-records list, no settings, no admin.
+ 9. Never add the INTERNET permission. If something seems to need a network call,
+    the design is wrong.
+10. Never check encryption.properties into version control.
+11. Never rotate the pepper on an existing installation without following the
+    documented wipe-and-re-seed procedure.
+12. Never let a second class query the certificates table. The repository is
+    the only door.
+13. Never hardcode a user-visible string in Java. Gate reasons map to string
+    resources.
+14. Never set android:background on a MaterialButton. Use backgroundTint.
+15. Never let values-night/themes.xml drift from the light theme - the white
+    background and blue toolbar are a deliberate choice.
+16. Never copy the codec into the desktop tools. tools/ compiles the real
+    CertificatePayloadCodec so the two cannot drift.
+
+
+================================================================================
+10. ADVISORY
+================================================================================
+
+Everything in this section is optional. None of it was applied except where
+explicitly noted as applied.
+
+A1  THE PINNED ID REGEX NEEDS A CORRECTION  (DEVIATION APPLIED - please review)
+    The brief pins the accepted ID pattern as ^CER[0-9]IB[A-Z0-9]U*$. Read
+    literally, [A-Z0-9] consumes exactly one character and U* then means "zero
+    or more U characters to the end of the string". That accepts only IDs like
+    CER1IBUUU - it cannot hold a year or a serial number, so every real
+    certificate ID fails validation at Gate 3 and the app rejects 100% of
+    genuine certificates. The pattern was almost certainly meant to allow a
+    middle segment before a U-separated serial.
+
+    I implemented the evident intent:
+
+        ^CER[0-9]IB[A-Z0-9]+U[A-Z0-9]+$
+
+    which accepts CER1IBAU0001, CER2IBAU0004 and so on, and keeps the structure
+    the pattern was clearly aiming at: a CER prefix, a version digit, an IB
+    marker, and a U-delimited serial. This is the one place I deviated from a
+    pinned constant, because the literal version makes the application
+    non-functional. Please confirm the intended format; if CER1IBAU0001 is not
+    the intended shape, only the regex constant needs to change.
+
+A2  LAYER A COULD CARRY A SECOND CHECKSUM CHARACTER
+    A single 6-bit checksum catches accidental damage and casual hand editing,
+    which is its stated job, and the fixture tool proves it does. But while
+    building an earlier revision I measured that a single position-weighted sum
+    mod 64 can miss a single-character change, because the weight value*(i+1) can
+    absorb it. Adding a second, differently-weighted character (for example a
+    running sum h = h*31 + v + i, also mod 64) raised detection to a 12-bit
+    check and closed that gap. I kept the single character because the brief
+    specifies one, and the Layer E signature is the real answer to a deliberate
+    forger. Worth revisiting if Layer E is never adopted.
+
+A3  PINNED LIBRARY VERSIONS ARE SLIGHTLY BEHIND
+    Lint reports newer available versions: AGP 9.4.1, compileSdk 37,
+    constraintlayout 2.2.2, zxing core 3.5.4. I left all of them exactly as
+    pinned. The AGP jump in particular would be worth doing at the start of a
+    new project rather than mid-build.
+
+A4  PORTRAIT LOCKING IS FADING
+    Lint reports LockedOrientationActivity and DiscouragedApi for the four
+    portrait locks, noting that fixed orientation is ignored on many devices
+    from Android 16. Portrait is specified for the scanner, and the
+    android:configChanges hint on ScannerActivity keeps the camera from
+    restarting on rotation. This is a warning, not a defect, but it will become
+    a real one on Android 16 devices.
+
+A5  PBKDF2 AT 10 000 ITERATIONS IS BELOW CURRENT GUIDANCE
+    10 000 is the pinned figure and is fine for a teaching project. Current
+    guidance favours 600 000 or more, or a memory-hard KDF such as Argon2id. The
+    practical mitigation here is different anyway: the pepper ships inside the
+    APK in BuildConfig, so an attacker who extracts it has the key outright and
+    iteration count stops mattering. The real fix for a production system is to
+    not ship the key inside the app - see A6.
+
+A6  THE MASTER SECRET LIVES INSIDE THE APK
+    buildConfigField puts the pepper in the DEX, so anyone who unpacks the APK
+    can read it and decrypt the whole database. This is inherent to a fully
+    offline app with a local database and no server - the device must be able to
+    decrypt on its own. It is honest to state: Layer C protects data at rest
+    against casual extraction, backup leakage and file-level inspection; it does
+    not protect against a determined reverse engineer. Adding a
+    AndroidKeyStore-wrapped key and a user PIN would raise the bar, at the cost
+    of a login screen, which the brief explicitly rules out.
+
+A7  SEED DATA IS BUILT INTO THE APK
+    The seven sample certificates are compiled in, so every installation ships
+    with the same identities. Fine for a demo. A real deployment would import a
+    signed dataset on first run, which is the natural place to also pin an issuing
+    key for Layer E.
+
+A8  THE GATE-4 CAMERA PAUSE COULD BE MADE STRUCTURALLY UNBREAKABLE
+    Today the placement is protected by convention plus a guard clause and a
+    comment. A stronger design would have GateResult expose only a sealed
+    "MayOpenResult" token that ScannerActivity is the sole holder of, so a
+    misplaced pause() would not compile. I kept the simpler version because it
+    matches the beginner-friendly constraint, but the risk is real and permanent
+    as long as the code is hand-edited.

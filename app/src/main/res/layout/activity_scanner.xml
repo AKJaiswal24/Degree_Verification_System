@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black"
+    tools:context=".ScannerActivity">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/appBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            style="@style/AppToolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:navigationIcon="?attr/homeAsUpIndicator"
+            app:title="@string/scanner_title" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <com.journeyapps.barcodescanner.DecoratedBarcodeView
+        android:id="@+id/barcodeView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toTopOf="@id/bannerRefusal"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/appBar"
+        app:zxing_scanner_layout="@layout/view_scanner" />
+
+    <ImageButton
+        android:id="@+id/buttonTorch"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_margin="18dp"
+        android:background="@android:color/transparent"
+        android:contentDescription="@string/scanner_torch_on"
+        android:src="@android:drawable/ic_menu_camera"
+        app:layout_constraintBottom_toBottomOf="@id/barcodeView"
+        app:layout_constraintEnd_toEndOf="@id/barcodeView" />
+
+    <ProgressBar
+        android:id="@+id/progressChecking"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:indeterminateTint="@color/white"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/barcodeView"
+        app:layout_constraintEnd_toEndOf="@id/barcodeView"
+        app:layout_constraintStart_toStartOf="@id/barcodeView"
+        app:layout_constraintTop_toTopOf="@id/barcodeView" />
+
+    <TextView
+        android:id="@+id/bannerRefusal"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/status_invalid_red"
+        android:gravity="center"
+        android:minHeight="60dp"
+        android:padding="16dp"
+        android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle2"
+        android:textColor="@color/white"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        tools:text="Plain Certificate ID not accepted"
+        tools:visibility="visible" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
