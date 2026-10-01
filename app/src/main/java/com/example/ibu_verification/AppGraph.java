@@ -2,32 +2,26 @@ package com.example.ibu_verification;
 
 import android.content.Context;
 
-import com.example.ibu_verification.db.CertificateDbHelper;
-import com.example.ibu_verification.db.CertificateRepository;
-import com.example.ibu_verification.db.CertificateSeeder;
+import com.example.ibu_verification.api.CertificateApi;
+import com.example.ibu_verification.api.SupabaseCertificateApi;
+import com.example.ibu_verification.db.CloudCertificateRepository;
+import com.example.ibu_verification.security.AndroidEncryptionHelper;
 import com.example.ibu_verification.security.EncryptionHelper;
+
+import okhttp3.OkHttpClient;
 
 public class AppGraph {
 
-    private final CertificateDbHelper dbHelper;
-    private final EncryptionHelper encryption;
-    private final CertificateRepository repository;
+    private final CloudCertificateRepository repository;
 
     public AppGraph(Context context) {
-        dbHelper = new CertificateDbHelper(context);
-        encryption = new EncryptionHelper(BuildConfig.CERT_MASTER_SECRET);
-        repository = new CertificateRepository(dbHelper, encryption);
+        OkHttpClient client = new OkHttpClient();
+        EncryptionHelper encryption = AndroidEncryptionHelper.create(context);
+        CertificateApi api = new SupabaseCertificateApi(client, encryption);
+        repository = new CloudCertificateRepository(api, encryption);
     }
 
-    public CertificateRepository repository() {
+    public CloudCertificateRepository repository() {
         return repository;
-    }
-
-    public void seedOnFirstLaunch() {
-        try {
-            new CertificateSeeder(repository).seedIfEmpty();
-        } catch (EncryptionHelper.EncryptionException e) {
-            android.util.Log.e("AppGraph", "Seeding failed", e);
-        }
     }
 }

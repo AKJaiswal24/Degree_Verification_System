@@ -13,7 +13,11 @@ public class HomeActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_home);
 
-        new AppGraph(this).seedOnFirstLaunch();
+        // The certificate store is now seeded server-side by an issuer
+        // (see the seed-cert Edge Function). There is nothing to seed on
+        // first launch, so we simply wire the cloud repository for later
+        // screens to consume.
+        new AppGraph(this);
 
         findViewById(R.id.buttonScan).setOnClickListener(new View.OnClickListener() {
             @Override

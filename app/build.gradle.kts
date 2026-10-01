@@ -26,6 +26,20 @@ val secrets = Properties().apply {
 val masterSecret = secrets.getProperty("cert.master.secret") ?: ""
 val hashPepper = secrets.getProperty("cert.hash.pepper") ?: ""
 
+// Supabase connection settings. Auto-generated if absent; never committed.
+val supabaseFile = rootProject.file("supabase.properties")
+if (!supabaseFile.exists()) {
+    supabaseFile.writeText(
+        "supabase.url=https://your-project.supabase.co\n" +
+                "supabase.anon.key=your-anon-key-here\n"
+    )
+}
+val supabaseProps = Properties().apply {
+    supabaseFile.inputStream().use { load(it) }
+}
+val supabaseUrl = supabaseProps.getProperty("supabase.url") ?: ""
+val supabaseAnonKey = supabaseProps.getProperty("supabase.anon.key") ?: ""
+
 android {
     namespace = "com.example.ibu_verification"
     compileSdk {
@@ -45,6 +59,8 @@ android {
 
         buildConfigField("String", "CERT_MASTER_SECRET", "\"$masterSecret\"")
         buildConfigField("String", "CERT_HASH_PEPPER", "\"$hashPepper\"")
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnonKey\"")
     }
 
     buildFeatures {
@@ -71,9 +87,10 @@ dependencies {
     implementation(libs.material)
     implementation(libs.constraintlayout)
     implementation(libs.cardview)
-    implementation(libs.recyclerview)
+    implementation(libs.recyclerView)
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
+    implementation(libs.okhttp)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.espresso.core)

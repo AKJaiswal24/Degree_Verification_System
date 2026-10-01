@@ -1,55 +1,48 @@
 package com.example.ibu_verification;
 
 import android.content.Context;
-import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
-import com.example.ibu_verification.db.CertificateDbHelper;
-import com.example.ibu_verification.db.CertificateRepository;
-import com.example.ibu_verification.db.CertificateSeeder;
+import com.example.ibu_verification.api.CertificateApi;
+import com.example.ibu_verification.api.CertificateApi.NetworkException;
+import com.example.ibu_verification.db.CloudCertificateRepository;
 import com.example.ibu_verification.model.Certificate;
 import com.example.ibu_verification.security.CertificatePayloadCodec;
 import com.example.ibu_verification.security.EncryptionHelper;
 import com.example.ibu_verification.security.GateResult;
 import com.example.ibu_verification.security.GateSequence;
-import com.example.ibu_verification.security.HashUtil;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
 
 @RunWith(AndroidJUnit4.class)
 public class StoreUnreadableDiagnosticTest {
 
     private static final String GOOD_SECRET = "aaaa1111bbbb2222cccc3333dddd4444";
     private static final String OTHER_SECRET = "ffff9999eeee8888dddd7777cccc6666";
-    private static final String SEED_ID = "CER1IBAU0001";
 
-    private Context context;
-    private CertificateDbHelper helper;
+    private MockCertificateApi api;
+    private EncryptionHelper goodEnc, otherEnc, blankEnc;
 
     @Before
     public void setUp() {
-        context = ApplicationProvider.getApplicationContext();
-        helper = new CertificateDbHelper(context);
-        SQLiteDatabase db = helper.getWritableDatabase();
-        db.execSQL("DROP TABLE IF EXISTS " + CertificateDbHelper.TABLE);
-        db.execSQL(CertificateDbHelper.CREATE_TABLE);
-        db.execSQL(CertificateDbHelper.CREATE_HASH_INDEX);
+        api = new MockCertificateApi();
+        goodEnc = new EncryptionHelper(GOOD_SECRET);
+        otherEnc = new EncryptionHelper(OTHER_SECRET);
+        blankEnc = new EncryptionHelper("");
     }
 
-    private Certificate sample() {
+    private Certificate makeCertificate(String id, String name) {
         Certificate c = new Certificate();
-        c.setCertificateId(SEED_ID);
-        c.setStudentName("Asha Verma");
+        c.setCertificateId(id);
+        c.setStudentName(name);
         c.setRollNumber("R21CS045");
         c.setEnrollmentNumber("ENU2021CS045");
         c.setCourseName("BSc Computer Science");
@@ -60,88 +53,96 @@ public class StoreUnreadableDiagnosticTest {
         return c;
     }
 
-    private GateResult scan(CertificateRepository repo, String certificateId) {
+    private GateResult scan(CloudCertificateRepository repo, String certificateId) {
         return new GateSequence(repo).evaluate(CertificatePayloadCodec.encode(certificateId), false);
-    }
-
-    private boolean rowFoundByHash(String certificateId) {
-        Cursor cursor = helper.getReadableDatabase().query(
-                CertificateDbHelper.TABLE, null,
-                CertificateDbHelper.COL_HASH + " = ?",
-                new String[]{HashUtil.certIdHash(certificateId)}, null, null, null, "1");
-        try {
-            return cursor.moveToFirst();
-        } finally {
-            cursor.close();
-        }
-    }
-
-    @Test
-    public void seededRecords_carryTheNewUniversityName() throws Exception {
-        new CertificateSeeder(new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET)))
-                .seedIfEmpty();
-
-        CertificateRepository reader = new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET));
-        Certificate found = reader.findByCertificateId("CER1IBAU0001");
-        assertNotNull(found);
-        assertEquals("iB University", found.getUniversityName());
-        assertEquals("Aarav Sharma", found.getStudentName());
     }
 
     @Test
     public void control_matchingSecret_scansSuccessfully() throws Exception {
-        CertificateRepository repo = new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET));
-        repo.insert(sample());
-        GateResult result = scan(repo, SEED_ID);
+        // API returns a valid Certificate (simulating successful server response)
+        Certificate c = makeCertificate("CER1IBAU0001", "Asha Verma");
+        api.setRecord("CER1IBAU0001", c);
+
+        CloudCertificateRepository repo = new CloudCertificateRepository(api, goodEnc);
+        GateResult result = scan(repo, "CER1IBAU0001");
+
         assertEquals("kind=" + result.getKind() + " reason=" + result.getReason()
                         + " id=" + result.getCertificateId(),
                 GateResult.Kind.FOUND, result.getKind());
+        assertEquals("Asha Verma", result.getCertificate().getStudentName());
     }
 
     @Test
-    public void masterSecretDriftAlone_reportsStoreUnreadable() throws Exception {
-        CertificateRepository writer = new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET));
-        writer.insert(sample());
+    public void masterSecretDrift_reportsStoreUnreadable() throws Exception {
+        // API simulates a decryption failure (wrong master secret)
+        api.setError("CER1IBAU0001", new EncryptionHelper.EncryptionException("Wrong key"));
 
-        // The hash pepper is untouched, so the row is still located...
-        assertTrue("row must still be found by hash", rowFoundByHash(SEED_ID));
+        CloudCertificateRepository repo = new CloudCertificateRepository(api, goodEnc);
+        GateResult result = scan(repo, "CER1IBAU0001");
 
-        // ...but the installed app now presents a different master secret.
-        CertificateRepository reader = new CertificateRepository(helper, new EncryptionHelper(OTHER_SECRET));
-        assertEquals(GateResult.Reason.STORE_UNREADABLE, scan(reader, SEED_ID).getReason());
+        assertEquals(GateResult.Reason.STORE_UNREADABLE, result.getReason());
     }
 
     @Test
-    public void hashPepperDriftAlone_reportsNotFound_notStoreUnreadable() throws Exception {
-        CertificateRepository writer = new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET));
-        writer.insert(sample());
+    public void blankSecret_thenRealSecret_reportsStoreUnreadable() throws Exception {
+        // API simulates a decryption failure (blank secret was used to encrypt)
+        api.setError("CER1IBAU0001", new EncryptionHelper.EncryptionException("Blank secret"));
 
-        // With a rotated hash pepper the computed hash no longer matches any row,
-        // so findByCertificateId returns null and the gate reports NOT_FOUND.
-        String rotatedHash = HashUtil.certIdHash(SEED_ID, OTHER_SECRET);
-        Cursor cursor = helper.getReadableDatabase().query(
-                CertificateDbHelper.TABLE, null,
-                CertificateDbHelper.COL_HASH + " = ?", new String[]{rotatedHash},
-                null, null, null, "1");
-        try {
-            assertFalse("row must not be findable after hash pepper rotation", cursor.moveToFirst());
-        } finally {
-            cursor.close();
+        CloudCertificateRepository repo = new CloudCertificateRepository(api, goodEnc);
+        assertEquals(GateResult.Reason.STORE_UNREADABLE, scan(repo, "CER1IBAU0001").getReason());
+    }
+
+    @Test
+    public void unknownCertificate_returnsNotFound() {
+        CloudCertificateRepository repo = new CloudCertificateRepository(api, goodEnc);
+        GateResult result = scan(repo, "UNKNOWN_ID");
+
+        assertEquals(GateResult.Kind.NOT_FOUND, result.getKind());
+        assertEquals("UNKNOWN_ID", result.getCertificateId());
+        assertNull(result.getCertificate());
+    }
+
+    @Test
+    public void networkError_reportsStoreUnreadable() {
+        // API simulates network failure
+        api.setNetworkError("CER1IBAU0001");
+
+        CloudCertificateRepository repo = new CloudCertificateRepository(api, goodEnc);
+        GateResult result = scan(repo, "CER1IBAU0001");
+
+        // Network errors are wrapped as EncryptionException -> STORE_UNREADABLE
+        assertEquals(GateResult.Reason.STORE_UNREADABLE, result.getReason());
+    }
+
+    // --- Mock API for testing ---
+
+    static class MockCertificateApi implements CertificateApi {
+        private final java.util.Map<String, Certificate> records = new java.util.HashMap<>();
+        private final java.util.Map<String, Exception> errors = new java.util.HashMap<>();
+        private boolean networkError = false;
+
+        void setRecord(String id, Certificate c) {
+            records.put(id, c);
         }
-    }
 
-    @Test
-    public void rowsSeededWhileSecretWasBlank_becomeStoreUnreadable() throws Exception {
-        // First launch with a blank cert.master.secret: EncryptionHelper degrades to
-        // plaintext, so the row is written unencrypted.
-        assertFalse(new EncryptionHelper("").isActive());
-        new CertificateRepository(helper, new EncryptionHelper("")).insert(sample());
+        void setError(String id, Exception e) {
+            errors.put(id, e);
+        }
 
-        // Hash pepper never changed, so the row is still found...
-        assertTrue(rowFoundByHash(SEED_ID));
+        void setNetworkError(String id) {
+            errors.put(id, new NetworkException("Network failure"));
+        }
 
-        // ...and decrypting a plaintext string as a ciphertext blob fails.
-        CertificateRepository reader = new CertificateRepository(helper, new EncryptionHelper(GOOD_SECRET));
-        assertEquals(GateResult.Reason.STORE_UNREADABLE, scan(reader, SEED_ID).getReason());
+        @Override
+        public Certificate findByCertificateId(String certificateId)
+                throws EncryptionHelper.EncryptionException, NetworkException {
+            if (errors.containsKey(certificateId)) {
+                Exception e = errors.get(certificateId);
+                if (e instanceof NetworkException) throw (NetworkException) e;
+                if (e instanceof EncryptionHelper.EncryptionException) throw (EncryptionHelper.EncryptionException) e;
+                throw new EncryptionHelper.EncryptionException(e.getMessage(), e);
+            }
+            return records.get(certificateId);
+        }
     }
 }

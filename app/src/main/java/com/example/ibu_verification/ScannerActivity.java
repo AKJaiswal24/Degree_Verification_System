@@ -14,9 +14,13 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.example.ibu_verification.api.CertificateApi;
+import com.example.ibu_verification.api.SupabaseCertificateApi;
+import com.example.ibu_verification.db.CloudCertificateRepository;
 import com.example.ibu_verification.model.Certificate;
+import com.example.ibu_verification.security.AndroidEncryptionHelper;
 import com.example.ibu_verification.security.CertificateLookup;
-import com.example.ibu_verification.security.CertificatePayloadCodec;
+import com.example.ibu_verification.security.EncryptionHelper;
 import com.example.ibu_verification.security.GateResult;
 import com.example.ibu_verification.security.GateSequence;
 import com.google.zxing.BarcodeFormat;
@@ -34,6 +38,8 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import okhttp3.OkHttpClient;
+
 public class ScannerActivity extends AppCompatActivity {
 
     private static final int CAMERA_REQUEST = 41;
@@ -44,6 +50,7 @@ public class ScannerActivity extends AppCompatActivity {
     private ProgressBar progressChecking;
     private ImageButton torchButton;
 
+    private CaptureManager captureManager;
     private ExecutorService worker;
     private GateSequence gates;
 
@@ -72,12 +79,15 @@ public class ScannerActivity extends AppCompatActivity {
         hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
         barcodeView.setDecoderFactory(new DefaultDecoderFactory(formats, hints, null, 0));
 
-        new CaptureManager(this, barcodeView).initializeFromIntent(getIntent(), null);
+        captureManager = new CaptureManager(this, barcodeView);
+        captureManager.initializeFromIntent(getIntent(), null);
 
         worker = Executors.newSingleThreadExecutor();
 
-        AppGraph graph = new AppGraph(this);
-        final CertificateLookup lookup = graph.repository();
+        OkHttpClient client = new OkHttpClient();
+        EncryptionHelper encryption = AndroidEncryptionHelper.create(this);
+        CertificateApi api = new SupabaseCertificateApi(client, encryption);
+        final CertificateLookup lookup = new CloudCertificateRepository(api, encryption);
         gates = new GateSequence(lookup);
 
         torchButton.setOnClickListener(new View.OnClickListener() {
@@ -128,17 +138,26 @@ public class ScannerActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        if (captureManager != null) {
+            captureManager.onResume();
+        }
         startScanning();
     }
 
     @Override
     protected void onPause() {
+        if (captureManager != null) {
+            captureManager.onPause();
+        }
         resumed = false;
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (captureManager != null) {
+            captureManager.onDestroy();
+        }
         if (worker != null) {
             worker.shutdownNow();
         }

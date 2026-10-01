@@ -1,6 +1,6 @@
 package com.example.ibu_verification.security;
 
-import android.util.Log;
+import android.annotation.SuppressLint;
 
 import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
@@ -14,6 +14,15 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
+/**
+ * AES-256-GCM field-level encryption with PBKDF2 key derivation.
+ *
+ * <p>This class deliberately references no Android types, so it can be compiled
+ * and run on the desktop by the tools in {@code tools/}. The Android application
+ * supplies {@link Base64} and {@link Logger} implementations that wrap
+ * {@code android.util.Base64} and {@code android.util.Log}; the desktop tools
+ * and JVM unit tests use the built-in JDK defaults.</p>
+ */
 public class EncryptionHelper {
 
     public static final String TAG = "EncryptionHelper";
@@ -23,6 +32,15 @@ public class EncryptionHelper {
     public static final int PBKDF2_ITERATIONS = 10000;
     public static final int KEY_LENGTH_BITS = 256;
 
+    public interface Base64 {
+        String encode(byte[] data);
+        byte[] decode(String text);
+    }
+
+    public interface Logger {
+        void error(String tag, String message);
+    }
+
     private static final Charset UTF8 = Charset.forName("UTF-8");
     private static final String KEY_ALGORITHM = "PBKDF2WithHmacSHA256";
     private static final String CIPHER = "AES/GCM/NoPadding";
@@ -31,12 +49,33 @@ public class EncryptionHelper {
     private final SecureRandom random = new SecureRandom();
     private final char[] pepper;
     private final boolean active;
+    private final Base64 base64;
+    private final Logger logger;
 
-    public EncryptionHelper(String pepper) {
+    public EncryptionHelper(String pepper, Base64 base64, Logger logger) {
         this.pepper = pepper == null ? new char[0] : pepper.toCharArray();
         this.active = this.pepper.length > 0;
+        this.base64 = base64;
+        this.logger = logger;
         if (!active) {
-            Log.e(TAG, "Master secret is empty. Storing values as plain text.");
+            logError("Master secret is empty. Storing values as plain text.");
+        }
+    }
+
+    /**
+     * Convenience constructor using JDK {@link java.util.Base64} and a
+     * stderr logger. Suitable for desktop tools and JVM unit tests. The Android
+     * application must use the three-argument constructor with
+     * {@code AndroidSecurityAdapters} because {@code java.util.Base64} is only
+     * available from API 26 and this app supports API 24.
+     */
+    public EncryptionHelper(String pepper) {
+        this(pepper, new JdkBase64(), new JdkLogger());
+    }
+
+    private void logError(String message) {
+        if (logger != null) {
+            logger.error(TAG, message);
         }
     }
 
@@ -65,7 +104,7 @@ public class EncryptionHelper {
             System.arraycopy(salt, 0, blob, 0, salt.length);
             System.arraycopy(iv, 0, blob, salt.length, iv.length);
             System.arraycopy(cipherText, 0, blob, salt.length + iv.length, cipherText.length);
-            return android.util.Base64.encodeToString(blob, android.util.Base64.NO_WRAP);
+            return base64.encode(blob);
         } catch (GeneralSecurityException e) {
             throw new EncryptionException("Could not encrypt value: " + e.getMessage(), e);
         }
@@ -79,7 +118,7 @@ public class EncryptionHelper {
             return stored;
         }
         try {
-            byte[] blob = android.util.Base64.decode(stored, android.util.Base64.NO_WRAP);
+            byte[] blob = base64.decode(stored);
             if (blob.length < MIN_BLOB_BYTES) {
                 throw new EncryptionException("Stored value is too short to be encrypted");
             }
@@ -102,6 +141,27 @@ public class EncryptionHelper {
             return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), "AES");
         } finally {
             spec.clearPassword();
+        }
+    }
+
+    /** JDK-provided defaults so the class also runs off-device. */
+    @SuppressLint("NewApi")
+    private static final class JdkBase64 implements Base64 {
+        @Override
+        public String encode(byte[] data) {
+            return java.util.Base64.getEncoder().encodeToString(data);
+        }
+
+        @Override
+        public byte[] decode(String text) {
+            return java.util.Base64.getDecoder().decode(text.getBytes(UTF8));
+        }
+    }
+
+    private static final class JdkLogger implements Logger {
+        @Override
+        public void error(String tag, String message) {
+            System.err.println(tag + ": " + message);
         }
     }
 
